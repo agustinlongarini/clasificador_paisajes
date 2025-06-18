@@ -39,7 +39,7 @@ Para ejecutar la aplicación en tu máquina local, seguí estos pasos:
 
 1.  **Clonar el repositorio**:
     ```bash
-    git clone [https://github.com/agustinlongarini/clasificador_paisajes.git](https://github.com/agustinlongarini/clasificador_paisajes.git)
+    git clone https://github.com/agustinlongarini/clasificador_paisajes.git
     cd clasificador_paisajes
     ```
 
