@@ -62,14 +62,24 @@ def preprocess_image(image: Image.Image) -> torch.Tensor:
     return tensor
 
 
-def predict(model: torch.nn.Module, device: torch.device, tensor: torch.Tensor) -> Tuple[str, float]:
-    """Realiza la predicción de una imagen y devuelve la clase y la confianza."""
+def predict(
+    model: torch.nn.Module, device: torch.device, tensor: torch.Tensor
+) -> Tuple[str, float, dict[str, float]]:
+    """Realiza la predicción de una imagen.
+
+    Devuelve la clase predicha, la confianza de esa clase y un diccionario con
+    las probabilidades de todas las clases.
+    """
     with torch.no_grad():
         tensor = tensor.to(device)
         outputs = model(tensor)
-        probabilities = F.softmax(outputs, dim=1)
-        top_prob, top_idx = torch.max(probabilities, 1)
-        predicted_class = CLASSES[top_idx.item()]
-        confidence = top_prob.item() 
+        probs_tensor = F.softmax(outputs, dim=1).squeeze(0).cpu()
 
-    return predicted_class, confidence
+        predicted_idx = int(torch.argmax(probs_tensor))
+        predicted_class = CLASSES[predicted_idx]
+        confidence = float(probs_tensor[predicted_idx])
+        prob_dict = {
+            cls: float(probs_tensor[i]) for i, cls in enumerate(CLASSES)
+        }
+
+    return predicted_class, confidence, prob_dict

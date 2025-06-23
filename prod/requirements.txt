@@ -8,3 +8,4 @@ scikit-learn
 Pillow
 matplotlib
 seaborn
+requests

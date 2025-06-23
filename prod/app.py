@@ -5,7 +5,11 @@ import zipfile
 from pathlib import Path
 
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageOps
+import requests
+
+# Tamaño usado para mostrar las miniaturas en la interfaz
+DISPLAY_SIZE = (256, 256)
 
 import utils
 
@@ -38,7 +42,7 @@ def _load_model():
     return utils.load_model(str(model_path))
 
 
-def classify_images(files):
+def classify_images(files, urls=None):
     model, device = _load_model()
     results = []
     errors = []
@@ -58,12 +62,19 @@ def classify_images(files):
                         continue
                     img = Image.open(io.BytesIO(data)).convert("RGB")
                     tensor = utils.preprocess_image(img)
-                    label, confidence = utils.predict(model, device, tensor)
-                    
+                    label, confidence, probs = utils.predict(model, device, tensor)
+
                     save_path = os.path.join(tmpdir, label, original_filename)
                     img.save(save_path)
-                    
-                    results.append({'name': original_filename, 'label': label, 'confidence': confidence, 'image': img})
+
+                    display_img = ImageOps.fit(img, DISPLAY_SIZE)
+                    results.append({
+                        'name': original_filename,
+                        'label': label,
+                        'confidence': confidence,
+                        'probs': probs,
+                        'image': display_img,
+                    })
                 
                 # Procesar archivos ZIP
                 else:
@@ -79,17 +90,53 @@ def classify_images(files):
                                         continue
                                     img = Image.open(io.BytesIO(data)).convert("RGB")
                                     tensor = utils.preprocess_image(img)
-                                    label, confidence = utils.predict(model, device, tensor)
+                                    label, confidence, probs = utils.predict(model, device, tensor)
                                     
                                     base_name = os.path.basename(name)
                                     save_path = os.path.join(tmpdir, label, base_name)
                                     img.save(save_path)
-                                    
-                                    results.append({'name': base_name, 'label': label, 'confidence': confidence, 'image': img})
+
+                                    display_img = ImageOps.fit(img, DISPLAY_SIZE)
+                                    results.append({
+                                        'name': base_name,
+                                        'label': label,
+                                        'confidence': confidence,
+                                        'probs': probs,
+                                        'image': display_img,
+                                    })
                                 except Exception as e:
                                     errors.append(f"Error procesando {name} en el ZIP: {str(e)}")
             except Exception as e:
                 errors.append(f"Error general procesando el archivo {original_filename}: {str(e)}")
+
+        # Procesar URLs si se proporcionan
+        if urls:
+            for url in urls:
+                try:
+                    resp = requests.get(url, timeout=10)
+                    resp.raise_for_status()
+                    data = resp.content
+                    if not is_valid_image(data):
+                        errors.append(f"URL no contiene una imagen válida: {url}")
+                        continue
+                    img = Image.open(io.BytesIO(data)).convert("RGB")
+                    tensor = utils.preprocess_image(img)
+                    label, confidence, probs = utils.predict(model, device, tensor)
+
+                    base_name = os.path.basename(url.split("?")[0]) or "imagen_url.jpg"
+                    save_path = os.path.join(tmpdir, label, base_name)
+                    img.save(save_path)
+
+                    display_img = ImageOps.fit(img, DISPLAY_SIZE)
+                    results.append({
+                        'name': base_name,
+                        'label': label,
+                        'confidence': confidence,
+                        'probs': probs,
+                        'image': display_img,
+                    })
+                except Exception as e:
+                    errors.append(f"Error procesando URL {url}: {str(e)}")
 
         # Comprimir resultados en zip
         zip_buffer = io.BytesIO()
@@ -115,9 +162,14 @@ def main():
         "Selecciona archivos", type=["jpg", "jpeg", "png", "zip"], accept_multiple_files=True
     )
 
-    if uploaded_files and st.button("Clasificar"):
+    url_input = st.text_area(
+        "Enlaces de imágenes (uno por línea)", placeholder="https://example.com/imagen.jpg"
+    )
+    urls = [u.strip() for u in url_input.splitlines() if u.strip()]
+
+    if (uploaded_files or urls) and st.button("Clasificar"):
         with st.spinner("Procesando..."):
-            results, zip_buffer, errors = classify_images(uploaded_files)
+            results, zip_buffer, errors = classify_images(uploaded_files, urls)
         
         if errors:
             st.warning("Se encontraron algunos errores durante el procesamiento:")
@@ -138,16 +190,65 @@ def main():
             
             for i, result in enumerate(results):
                 col = cols[i % num_cols]
-                
+
                 # Extraemos la información del diccionario de resultados
                 image_to_show = result['image']
                 predicted_label = result['label']
                 confidence_score = result['confidence']
-                
-                col.image(image_to_show, caption=f"{result['name']}", use_container_width=True)
-                col.write(f"**Predicción**: {predicted_label}")
+                probs = result.get('probs', {})
+
+                col.image(result['image'], use_container_width=True)
                 confidence_percent = confidence_score * 100
-                col.progress(int(confidence_percent), text=f"Nivel de confianza: {confidence_percent:.2f}%")
+
+                # Mostrar la predicción principal con estilo destacado
+                col.markdown(f"Predicción: **{predicted_label.capitalize()}**")
+                
+                col.markdown("<hr style='margin-top: 0.5rem; margin-bottom: 0.1rem;'>", unsafe_allow_html=True)
+                
+                # Mostrar la confianza debajo de la línea
+                col.markdown(f"**Confianza: {confidence_percent:.1f}%**")
+                
+                # Barra de progreso visual para la confianza
+                col.progress(confidence_percent / 100)
+                
+                # Espacio adicional antes del expander
+                col.markdown("")
+
+                # Expander para ver todas las probabilidades
+                with col.expander("Ver detalles"):
+                    for cls, prob in sorted(probs.items(), key=lambda x: x[1], reverse=True):
+                        prob_percent = prob * 100
+                        # Crear una barra de progreso compacta usando HTML y CSS
+                        if cls == predicted_label:
+                            st.markdown(
+                                f"""
+                                <div style="margin-bottom: 8px;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+                                        <span style="font-weight: bold; color: #1f77b4;">{cls}</span>
+                                        <span style="font-weight: bold; color: #1f77b4;">{prob_percent:.1f}%</span>
+                                    </div>
+                                    <div style="background-color: #e0e0e0; border-radius: 10px; height: 8px; overflow: hidden;">
+                                        <div style="background-color: #1f77b4; height: 100%; width: {prob_percent}%; border-radius: 10px;"></div>
+                                    </div>
+                                </div>
+                                """, 
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            st.markdown(
+                                f"""
+                                <div style="margin-bottom: 6px;">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+                                        <span style="color: #666;">{cls}</span>
+                                        <span style="color: #666; font-size: 0.9em;">{prob_percent:.1f}%</span>
+                                    </div>
+                                    <div style="background-color: #f0f0f0; border-radius: 6px; height: 4px; overflow: hidden;">
+                                        <div style="background-color: #ccc; height: 100%; width: {prob_percent}%; border-radius: 6px;"></div>
+                                    </div>
+                                </div>
+                                """, 
+                                unsafe_allow_html=True
+                            )
 
         else:
             st.error("No se pudieron procesar imágenes válidas.")
